@@ -30,6 +30,29 @@ cp .env.example .env          # 已存在则跳过
 
 > 更换向量模型或维度后，必须在文档页点「重建全部向量」，否则维度不一致会退回关键词检索。
 
+## 部署到服务器（systemd）
+
+```bash
+git clone git@github.com:S-GGbond/zhiku.git
+cd zhiku
+sudo ./deploy/install.sh          # 装到 /opt/zhiku，建 zhiku 用户与 venv，注册 systemd
+```
+
+脚本做的事：建系统用户 → 复制代码（不含 `data/`、`.git`、`.env`）→ 建 venv 装依赖 → 生成 `.env` →
+写 `/etc/systemd/system/zhiku.service` → 启用并启动 → 阻塞等 `/health` 通过。重复执行只会更新代码并重启。
+
+| 操作 | 命令 |
+| --- | --- |
+| 状态 / 日志 | `systemctl status zhiku` / `journalctl -u zhiku -f` |
+| 重启 / 停止 | `systemctl restart zhiku` / `systemctl stop zhiku` |
+| 升级 | `git pull && sudo ./deploy/install.sh`（保留 data 与 .env） |
+| 卸载 | `sudo ./deploy/uninstall.sh`（加 `--purge` 连数据一起删） |
+
+参数：`--dir /srv/zhiku` 换安装目录、`--port 8000` 换端口、`--in-place` 不复制代码直接用当前目录。
+
+默认只监听 `127.0.0.1`。`enable` 已包含开机自启与崩溃自动拉起；
+公网访问请用 Caddy / Nginx 反向代理并配 TLS，不建议把 `--host` 改成 `0.0.0.0` 直接暴露。
+
 ## 支持的文件
 
 | 类型 | 说明 |

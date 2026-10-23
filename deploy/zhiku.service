@@ -1,0 +1,31 @@
+[Unit]
+Description=zhiku - 本地知识库 RAG（向量 + 关键词混合检索）
+Documentation=https://github.com/S-GGbond/zhiku
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@APP_DIR@
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=@APP_DIR@/.venv/bin/python @APP_DIR@/cli.py serve --host @HOST@ --port @PORT@
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillSignal=SIGINT
+SyslogIdentifier=zhiku
+
+# 沙箱：只允许写自己的目录，其余只读
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=@APP_DIR@
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
