@@ -77,6 +77,8 @@ class RetrievalIndex:
         vec_rows: list[int] = []
         postings: dict[str, list[tuple[int, int]]] = defaultdict(list)
         dl = np.zeros(len(rows), dtype=np.float32)
+        dim: int | None = None
+        skipped = 0
         for i, row in enumerate(rows):
             text = row["text"]
             entries.append({
@@ -93,8 +95,17 @@ class RetrievalIndex:
                 postings[token].append((i, count))
             blob = row["embedding"]
             if blob:
-                vectors.append(np.frombuffer(blob, dtype=np.float32))
+                vec = np.frombuffer(blob, dtype=np.float32)
+                # 换模型重建到一半时新旧维度会共存，这里跳过不一致的，别让整个索引起不来
+                if dim is None:
+                    dim = vec.size
+                if vec.size != dim:
+                    skipped += 1
+                    continue
+                vectors.append(vec)
                 vec_rows.append(i)
+        if skipped:
+            log.warning("跳过 %s 个维度不一致的向量（旧模型残留，重建全部向量可消除）", skipped)
         matrix = np.vstack(vectors).astype(np.float32) if vectors else np.zeros((0, 0), dtype=np.float32)
         if matrix.size:
             norms = np.linalg.norm(matrix, axis=1, keepdims=True)

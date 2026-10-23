@@ -323,7 +323,8 @@ class Ingestor:
                 last["pct"] = pct
                 self.db.update_document(doc_id, progress=round(pct, 3))
 
-        vectors = self.runtime.embed_texts([r["text"] for r in rows], progress=on_progress)
+        vectors = self.runtime.embed_texts([r["text"] for r in rows], progress=on_progress,
+                                           allow_dim_change=True)
         self.db.update_embeddings(doc_id, [v.tobytes() for v in vectors])
         self.db.update_document(doc_id, status="ready", progress=1.0, error=None)
         self.index.invalidate()

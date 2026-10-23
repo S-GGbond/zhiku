@@ -113,16 +113,19 @@ class Runtime:
                 self._llm_sig = sig
             return self._llm
 
-    def embed_texts(self, texts: list[str], progress=None) -> np.ndarray:
+    def embed_texts(self, texts: list[str], progress=None, allow_dim_change: bool = False) -> np.ndarray:
         if not self._cfg.get("embed_base_url") or not self._cfg.get("embed_api_key"):
             raise ConfigError("尚未配置向量模型接口，请在「设置」里填写 Base URL 与 API Key")
         vectors = self.embedder().encode(texts, progress=progress)
         dim = int(vectors.shape[1])
         known = int(self._cfg.get("embed_dim") or 0)
         if known and known != dim:
-            raise ProviderError(
-                f"向量维度变化（原 {known}，现 {dim}）。请在「设置」页执行「重建全部索引」以适配新模型。"
-            )
+            if not allow_dim_change:
+                raise ProviderError(
+                    f"向量维度变化（原 {known}，现 {dim}）。请在「设置」页执行「重建全部索引」以适配新模型。"
+                )
+            self._cfg["embed_dim"] = dim
+            self.db.set_setting("embed_dim", dim)
         if not known:
             self._cfg["embed_dim"] = dim
             self.db.set_setting("embed_dim", dim)

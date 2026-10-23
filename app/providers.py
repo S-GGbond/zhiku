@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Callable, Iterator, Sequence
 
@@ -23,7 +24,8 @@ def _client(base_url: str, api_key: str, timeout: float = 120.0) -> OpenAI:
     if not api_key:
         raise ConfigError("未配置 API Key")
     base = base_url.rstrip("/")
-    if not base.endswith("/v1") and "/api/paas" not in base:
+    # 只有没写版本号的地址才补 /v1：OpenAI 官方不带，火山方舟是 /api/v3，智谱是 /api/paas/v4
+    if not re.search(r"/v\d+$", base):
         base = base + "/v1"
     return OpenAI(base_url=base, api_key=api_key, timeout=timeout, max_retries=0)
 
@@ -34,6 +36,7 @@ class Embedder:
     def __init__(self, base_url: str, api_key: str, model: str, batch: int = 32, timeout: float = 120.0):
         self.model = model
         self.batch = max(1, int(batch))
+        self._min_interval = 1.0  # 秒；遇到 429 自动抬高，成功后缓慢回落
         self._client = _client(base_url, api_key, timeout)
         self.name = f"{model}"
 
@@ -54,17 +57,42 @@ class Embedder:
         norms[norms == 0] = 1.0
         return (arr / norms).astype(np.float32)
 
+    def _embed_once(self, batch: list[str]) -> list[list[float]]:
+        resp = self._client.embeddings.create(model=self.model, input=batch)
+        data = sorted(resp.data, key=lambda d: d.index)
+        return [d.embedding for d in data]
+
+    @staticmethod
+    def _retry_wait(exc: Exception, attempt: int) -> float:
+        """优先服从上游的 Retry-After，没有就指数退避。"""
+        headers = getattr(getattr(exc, "response", None), "headers", None) or {}
+        try:
+            value = float(headers.get("retry-after", 0) or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        return min(value, 60.0) if value > 0 else min(2 ** attempt, 30.0)
+
     def _embed_batch(self, batch: list[str]) -> list[list[float]]:
         last_error: Exception | None = None
-        for attempt in range(3):
+        for attempt in range(10):
+            time.sleep(self._min_interval)
             try:
-                resp = self._client.embeddings.create(model=self.model, input=batch)
-                data = sorted(resp.data, key=lambda d: d.index)
-                return [d.embedding for d in data]
+                result = self._embed_once(batch)
+                self._min_interval = max(self._min_interval * 0.9, 0.5)
+                return result
             except Exception as exc:  # noqa: BLE001 上游错误类型不统一
                 last_error = exc
-                if attempt < 2:
-                    time.sleep(1.2 * (attempt + 1))
+                status = getattr(exc, "status_code", None)
+                # 有的服务限制单次条数（如方舟 max 10 条），二分后重试
+                if status == 400 and len(batch) > 1:
+                    mid = len(batch) // 2
+                    return self._embed_batch(batch[:mid]) + self._embed_batch(batch[mid:])
+                if status is not None and status != 429 and status < 500:
+                    break  # 鉴权、模型不存在这类错误，重试没意义
+                if status == 429:
+                    # 配额很紧的服务（如按分钟限流）：先把节奏放慢，再按建议时间等
+                    self._min_interval = min(self._min_interval * 2, 20.0)
+                time.sleep(max(self._retry_wait(exc, attempt), self._min_interval))
         raise ProviderError(f"向量化失败（模型 {self.model}）：{_brief(last_error)}") from last_error
 
 
