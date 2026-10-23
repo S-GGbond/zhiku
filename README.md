@@ -12,7 +12,7 @@
 ## 快速开始
 
 ```bash
-cd /home/chen/Project/my-rag
+cd /home/chen/Project/zhiku
 cp .env.example .env          # 已存在则跳过
 ./start.sh                    # 或 python3 cli.py serve
 ```
@@ -131,7 +131,7 @@ curl -X POST http://127.0.0.1:8000/api/documents -F 'files=@方案.pdf' -F 'file
   "mcpServers": {
     "local-knowledge-base": {
       "command": "python3",
-      "args": ["/home/chen/Project/my-rag/mcp_server.py"],
+      "args": ["/home/chen/Project/zhiku/mcp_server.py"],
       "env": {
         "RAG_BASE_URL": "http://127.0.0.1:8000",
         "RAG_API_TOKEN": "",
@@ -144,6 +144,16 @@ curl -X POST http://127.0.0.1:8000/api/documents -F 'files=@方案.pdf' -F 'file
 ```
 
 对话模型和向量模型都可被 Agent 直接复用：Agent 负责「怎么问」，知识库负责「答什么、引用哪一段」。
+
+仓库里自带两份可复制的配置：
+
+- `.mcp.json`：只含 `local-kb` 一个 server 的模板，路径按你实际克隆位置改；
+- `skills/kb-memory/SKILL.md`：Agent 侧的行为约定（先查后写、什么该入库、怎么避免重复），
+  装到 `~/.codebuddy/skills/` 后，支持 Skill 的 Agent 会自动读取。
+
+```bash
+cp -r skills/kb-memory ~/.codebuddy/skills/     # 安装 skill
+```
 
 ### 让 Agent 自动维护知识库
 

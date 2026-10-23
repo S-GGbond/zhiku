@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "local-kb": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["/home/chen/Project/zhiku/mcp_server.py"],
+      "env": {
+        "RAG_BASE_URL": "http://127.0.0.1:8000",
+        "RAG_API_TOKEN": "",
+        "RAG_USERNAME": "",
+        "RAG_PASSWORD": ""
+      }
+    }
+  }
+}

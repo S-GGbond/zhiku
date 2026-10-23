@@ -18,7 +18,7 @@ _COOKIE: str | None = None
 
 mcp = FastMCP("local-knowledge-base")
 
-SERVICE_DOWN = ("错误：连接不上知识库服务（{url}）。请先启动服务：cd /home/chen/Project/my-rag && ./start.sh，"
+SERVICE_DOWN = ("错误：连接不上知识库服务（{url}）。请先启动服务：cd /home/chen/Project/zhiku && ./start.sh，"
                 "或用环境变量 RAG_BASE_URL 指向实际地址。")
 
 
