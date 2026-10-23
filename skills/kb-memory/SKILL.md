@@ -54,7 +54,7 @@ description: 让 Agent 自动维护本地知识库（local-kb MCP）：动笔前
 
 ## 六、失败处理
 
-- 工具报"连接不上知识库服务"：提示用户 `cd /home/chen/Project/zhiku && ./start.sh`，或确认 `RAG_BASE_URL`。
+- 工具报"连接不上知识库服务"：提示用户在知识库项目目录执行 `./start.sh`，或确认 `RAG_BASE_URL`。
 - 报"请先配置向量模型接口"：让用户到 WebUI「设置」里填向量接口，不要自己编造。
 - 入库后状态是 `error`：读 `list_documents` 里的错误原因，通常是扫描件 PDF 或向量接口不可用。
 

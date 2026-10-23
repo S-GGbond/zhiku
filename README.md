@@ -12,7 +12,8 @@
 ## 快速开始
 
 ```bash
-cd /home/chen/Project/zhiku
+git clone git@github.com:S-GGbond/zhiku.git
+cd zhiku
 cp .env.example .env          # 已存在则跳过
 ./start.sh                    # 或 python3 cli.py serve
 ```
@@ -131,7 +132,7 @@ curl -X POST http://127.0.0.1:8000/api/documents -F 'files=@方案.pdf' -F 'file
   "mcpServers": {
     "local-knowledge-base": {
       "command": "python3",
-      "args": ["/home/chen/Project/zhiku/mcp_server.py"],
+      "args": ["/绝对路径/zhiku/mcp_server.py"],
       "env": {
         "RAG_BASE_URL": "http://127.0.0.1:8000",
         "RAG_API_TOKEN": "",
