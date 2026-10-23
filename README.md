@@ -51,7 +51,15 @@ sudo ./deploy/install.sh          # 装到 /opt/zhiku，建 zhiku 用户与 venv
 参数：`--dir /srv/zhiku` 换安装目录、`--port 8000` 换端口、`--in-place` 不复制代码直接用当前目录。
 
 默认只监听 `127.0.0.1`。`enable` 已包含开机自启与崩溃自动拉起；
-公网访问请用 Caddy / Nginx 反向代理并配 TLS，不建议把 `--host` 改成 `0.0.0.0` 直接暴露。
+公网访问请用反向代理并配 TLS，不建议把 `--host` 改成 `0.0.0.0` 直接暴露。
+
+Nginx 示例见 `deploy/nginx-zhiku.conf`（注意 `proxy_buffering off`，否则流式回答会变成一次性返回）：
+
+```bash
+sudo cp deploy/nginx-zhiku.conf /etc/nginx/sites-available/zhiku
+sudo ln -sfn /etc/nginx/sites-available/zhiku /etc/nginx/sites-enabled/zhiku
+sudo nginx -t && sudo systemctl reload nginx
+```
 
 ## 支持的文件
 
