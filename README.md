@@ -45,7 +45,7 @@ sudo ./deploy/install.sh          # 装到 /opt/zhiku，建 zhiku 用户与 venv
 | --- | --- |
 | 状态 / 日志 | `systemctl status zhiku` / `journalctl -u zhiku -f` |
 | 重启 / 停止 | `systemctl restart zhiku` / `systemctl stop zhiku` |
-| 升级 | `git pull && sudo ./deploy/install.sh`（保留 data 与 .env） |
+| 升级 | `sudo ./deploy/update.sh`（自动回到源码目录 git pull 再重装，保留 data 与 .env） |
 | 卸载 | `sudo ./deploy/uninstall.sh`（加 `--purge` 连数据一起删） |
 
 参数：`--dir /srv/zhiku` 换安装目录、`--port 8000` 换端口、`--in-place` 不复制代码直接用当前目录。

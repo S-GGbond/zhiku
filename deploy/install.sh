@@ -48,6 +48,7 @@ if [[ $COPY_MODE -eq 0 || "$SRC_DIR" == "$APP_DIR" ]]; then
 else
   log "安装到：$APP_DIR（源：$SRC_DIR）"
   mkdir -p "$APP_DIR"
+  printf '%s\n' "$SRC_DIR" > "$APP_DIR/.install-source"
   tar -C "$SRC_DIR" \
       --exclude=./data --exclude=./.git --exclude=__pycache__ \
       --exclude=./.venv --exclude=./.env --exclude='*.pyc' \
