@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>本地知识库 · RAG</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6bff'/%3E%3Ctext x='16' y='22' font-size='14' font-family='system-ui' font-weight='700' fill='white' text-anchor='middle'%3EKB%3C/text%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">KB</div>
+      <div>
+        <h1>本地知识库</h1>
+        <p>RAG · 可被 Agent 调用</p>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item active" data-view="chat"><span>对话</span><kbd>1</kbd></button>
+      <button class="nav-item" data-view="docs"><span>文档</span><kbd>2</kbd></button>
+      <button class="nav-item" data-view="settings"><span>设置</span><kbd>3</kbd></button>
+    </nav>
+
+    <div class="side-stats">
+      <div class="stat"><b id="stat-docs">0</b><span>文档</span></div>
+      <div class="stat"><b id="stat-chunks">0</b><span>片段</span></div>
+      <div class="stat"><b id="stat-vectors">0</b><span>向量</span></div>
+    </div>
+
+    <div class="side-status" id="side-status"></div>
+    <div class="side-account">
+      <span id="account-name">—</span>
+      <button class="link" id="logout">退出登录</button>
+    </div>
+    <div class="side-foot">API: <code>/api</code> · 文档: <a href="/api/docs" target="_blank">/api/docs</a></div>
+  </aside>
+
+  <main class="main">
+    <!-- ========== 对话 ========== -->
+    <section class="view active" id="view-chat">
+      <header class="view-head">
+        <div>
+          <h2>知识库问答</h2>
+          <p class="sub">回答只依据已入库内容，并标注引用来源</p>
+        </div>
+        <div class="head-actions">
+          <div class="seg" id="mode-switch">
+            <button data-mode="answer" class="active">AI 回答</button>
+            <button data-mode="retrieve">仅检索</button>
+          </div>
+          <details class="scope">
+            <summary id="scope-label">范围：全部文档</summary>
+            <div class="scope-panel">
+              <div class="scope-tools">
+                <button class="link" id="scope-all">全选</button>
+                <button class="link" id="scope-none">清空</button>
+              </div>
+              <div id="scope-list" class="scope-list"></div>
+            </div>
+          </details>
+          <button class="ghost" id="chat-new">新对话</button>
+        </div>
+      </header>
+
+      <div class="banner hidden" id="cfg-banner">
+        尚未配置向量模型，请先到 <button class="link" data-goto="settings">设置</button> 填写接口地址与 API Key。
+      </div>
+      <div class="banner info hidden" id="llm-banner">
+        未配置对话模型，问答将直接返回检索到的原文片段（<button class="link" data-goto="settings">去配置</button>）。
+      </div>
+
+      <div class="messages" id="messages">
+        <div class="empty" id="chat-empty">
+          <h3>向你的资料提问</h3>
+          <p>已入库文档会先被检索，再由模型基于原文回答。试试：</p>
+          <div class="samples">
+            <button>这份文档的主要结论是什么？</button>
+            <button>总结一下有哪些关键流程？</button>
+            <button>关于成本的部分提到了哪些数据？</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <textarea id="chat-input" rows="1" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
+        <button class="primary" id="chat-send">发送</button>
+      </div>
+    </section>
+
+    <!-- ========== 文档 ========== -->
+    <section class="view" id="view-docs">
+      <header class="view-head">
+        <div>
+          <h2>文档管理</h2>
+          <p class="sub">支持 PDF、Word、Excel、PPT、Markdown、纯文本、代码与网页链接</p>
+        </div>
+        <div class="head-actions">
+          <button class="ghost" id="docs-refresh">刷新</button>
+          <button class="ghost" id="reembed-all">重建全部向量</button>
+        </div>
+      </header>
+
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="file-input" multiple hidden />
+        <p><b>拖拽文件到这里</b>，或 <button class="link" id="pick-file">选择文件</button></p>
+        <p class="hint">单个文件上限 50MB，解析与向量化在后台进行</p>
+        <div class="url-row">
+          <input id="url-input" placeholder="或输入网页链接 https://..." />
+          <button class="ghost" id="url-add">抓取网页</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr><th>标题</th><th>类型</th><th>状态</th><th>片段</th><th>创建时间</th><th></th></tr>
+          </thead>
+          <tbody id="doc-rows"></tbody>
+        </table>
+        <div class="empty-table hidden" id="docs-empty">还没有文档，先上传一份试试。</div>
+      </div>
+    </section>
+
+    <!-- ========== 设置 ========== -->
+    <section class="view" id="view-settings">
+      <header class="view-head">
+        <div>
+          <h2>设置</h2>
+          <p class="sub">所有配置保存在本机，接口需兼容 OpenAI 协议</p>
+        </div>
+        <div class="head-actions"><button class="primary" id="cfg-save">保存</button></div>
+      </header>
+
+      <div class="cards">
+        <section class="card">
+          <h3>向量模型 <span class="tag" id="embed-state">未配置</span></h3>
+          <p class="card-hint">调用 <code>/v1/embeddings</code>，用于文档与问题的语义检索。更换模型后需重建向量。</p>
+          <label>Base URL<input id="embed_base_url" placeholder="https://api.openai.com/v1" /></label>
+          <label>API Key<input id="embed_api_key" type="password" placeholder="sk-..." /></label>
+          <label>模型名<input id="embed_model" placeholder="text-embedding-3-small" /></label>
+          <div class="row">
+            <button class="ghost" data-test="embed">测试连接</button>
+            <span class="test-result" id="embed-test"></span>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>对话模型 <span class="tag" id="llm-state">未配置</span></h3>
+          <p class="card-hint">调用 <code>/v1/chat/completions</code>，用于生成带引用的回答。</p>
+          <label>Base URL<input id="llm_base_url" placeholder="https://open.bigmodel.cn/api/paas/v4" /></label>
+          <label>API Key<input id="llm_api_key" type="password" placeholder="..." /></label>
+          <label>模型名<input id="llm_model" placeholder="glm-4-flash" /></label>
+          <div class="row">
+            <button class="ghost" data-test="llm">测试连接</button>
+            <span class="test-result" id="llm-test"></span>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>检索参数</h3>
+          <div class="grid2">
+            <label>分块大小（字）<input id="chunk_size" type="number" min="100" max="4000" /></label>
+            <label>分块重叠（字）<input id="chunk_overlap" type="number" min="0" max="1000" /></label>
+            <label>向量召回数<input id="top_k_vector" type="number" min="1" max="100" /></label>
+            <label>关键词召回数<input id="top_k_keyword" type="number" min="1" max="100" /></label>
+            <label>最终引用条数<input id="final_k" type="number" min="1" max="20" /></label>
+            <label>上下文上限（字）<input id="max_context_chars" type="number" min="800" max="30000" /></label>
+          </div>
+          <label class="check"><input type="checkbox" id="query_rewrite" /> 多轮对话时改写检索问题</label>
+          <label class="check"><input type="checkbox" id="api_token_toggle" /> 为 API 启用访问令牌</label>
+          <label id="api_token_wrap" class="hidden">访问令牌<input id="api_token" type="password" placeholder="Bearer Token" /></label>
+        </section>
+
+        <section class="card">
+          <h3>备份与迁移</h3>
+          <p class="card-hint">导出内容含数据库、原始文件、笔记、账号与模型配置；导入会整体覆盖当前知识库，完成后需用备份里的账号重新登录。</p>
+          <div class="row">
+            <button class="ghost" id="backup-export">导出备份</button>
+            <button class="ghost" id="backup-import">导入备份</button>
+            <input type="file" id="backup-file" accept=".zip" class="hidden" />
+            <span class="test-result" id="backup-result"></span>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>账号与密码</h3>
+          <p class="card-hint">修改后其他设备上的登录会话会立即失效，当前会话保持登录。</p>
+          <label>原密码<input id="pwd-old" type="password" autocomplete="current-password" /></label>
+          <div class="grid2">
+            <label>新密码<input id="pwd-new" type="password" autocomplete="new-password" placeholder="至少 6 位" /></label>
+            <label>确认新密码<input id="pwd-confirm" type="password" autocomplete="new-password" /></label>
+          </div>
+          <div class="row">
+            <button class="ghost" id="pwd-save">修改密码</button>
+            <span class="test-result" id="pwd-result"></span>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>配置自检</h3>
+          <p class="card-hint">分块大小改动只影响新入库文档；已有的可在文档页重新解析。</p>
+          <div class="row"><button class="ghost" id="cfg-reload">重新载入</button></div>
+          <pre class="kv" id="cfg-summary"></pre>
+        </section>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="modal hidden" id="modal">
+  <div class="modal-box">
+    <header><h3 id="modal-title">来源</h3><button class="icon" id="modal-close">×</button></header>
+    <div id="modal-body" class="modal-body"></div>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

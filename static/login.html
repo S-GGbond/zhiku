@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>登录 · 本地知识库</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6bff'/%3E%3Ctext x='16' y='22' font-size='14' font-family='system-ui' font-weight='700' fill='white' text-anchor='middle'%3EKB%3C/text%3E%3C/svg%3E" />
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --line:#e4e7ef; --text:#1b1f2a; --muted:#6b7280; --blue:#2f6bff; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: radial-gradient(1200px 600px at 50% -10%, #e8efff 0%, var(--bg) 55%);
+    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--text); padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 380px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 16px; padding: 28px; box-shadow: 0 12px 40px rgba(24,39,75,.08);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+  .logo {
+    width: 40px; height: 40px; border-radius: 12px; background: var(--blue); color: #fff;
+    display: grid; place-items: center; font-weight: 700; letter-spacing: .5px;
+  }
+  .brand b { display: block; font-size: 15px; }
+  .brand span { color: var(--muted); font-size: 12px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 18px; }
+  label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 12px; }
+  input {
+    width: 100%; margin-top: 6px; padding: 10px 12px; border: 1px solid var(--line);
+    border-radius: 10px; font-size: 14px; color: var(--text); background: #fff; outline: none;
+  }
+  input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(47,107,255,.12); }
+  button {
+    width: 100%; margin-top: 6px; padding: 11px 14px; border: 0; border-radius: 10px;
+    background: var(--blue); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .6; cursor: default; }
+  .error { color: #d93025; font-size: 12.5px; min-height: 18px; margin-top: 10px; }
+  .hidden { display: none !important; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1218; --card:#161a22; --line:#262c38; --text:#e6e9f0; --muted:#8a93a6; }
+    body { background: radial-gradient(1200px 600px at 50% -10%, #17203a 0%, var(--bg) 55%); }
+    input { background: #11151c; }
+  }
+</style>
+</head>
+<body>
+<form class="card" id="form" autocomplete="on">
+  <div class="brand">
+    <div class="logo">KB</div>
+    <div><b>本地知识库</b><span>RAG · 可被 Agent 调用</span></div>
+  </div>
+
+  <h1 id="title">登录</h1>
+  <p class="hint" id="hint">输入账号密码进入知识库</p>
+
+  <label>用户名<input id="username" name="username" autocomplete="username" required /></label>
+  <label>密码<input id="password" name="password" type="password" autocomplete="current-password" required /></label>
+  <label class="hidden" id="confirm-wrap">确认密码<input id="confirm" type="password" autocomplete="new-password" /></label>
+
+  <button type="submit" id="submit">登录</button>
+  <div class="error" id="error"></div>
+</form>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  let mode = "login";
+
+  async function status() {
+    const res = await fetch("/api/auth/status");
+    return res.json();
+  }
+
+  function render(nextMode) {
+    mode = nextMode;
+    const first = mode === "setup";
+    $("#title").textContent = first ? "初始化账号" : "登录";
+    $("#hint").textContent = first ? "首次使用，创建一个账号来保护知识库" : "输入账号密码进入知识库";
+    $("#submit").textContent = first ? "创建并进入" : "登录";
+    $("#confirm-wrap").classList.toggle("hidden", !first);
+    $("#password").setAttribute("autocomplete", first ? "new-password" : "current-password");
+  }
+
+  async function boot() {
+    try {
+      const s = await status();
+      if (s.authenticated) { location.replace("/"); return; }
+      render(s.initialized ? "login" : "setup");
+    } catch (err) {
+      $("#error").textContent = "无法连接服务，请确认已启动";
+    }
+  }
+
+  $("#form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("#error").textContent = "";
+    const username = $("#username").value.trim();
+    const password = $("#password").value;
+    if (mode === "setup" && password !== $("#confirm").value) {
+      $("#error").textContent = "两次输入的密码不一致";
+      return;
+    }
+    $("#submit").disabled = true;
+    try {
+      const res = await fetch("/api/auth/" + (mode === "setup" ? "setup" : "login"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "操作失败");
+      location.replace("/");
+    } catch (err) {
+      $("#error").textContent = err.message;
+      $("#submit").disabled = false;
+    }
+  });
+
+  boot();
+})();
+</script>
+</body>
+</html>
