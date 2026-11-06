@@ -847,6 +847,31 @@
       });
   }
 
+  function watchRebuild(total) {
+    // 重建是后台逐篇跑的，这里只轮统计数字，跑完再重排一次图，避免每轮都抖
+    return new Promise((resolve) => {
+      let last = -1, idle = 0, rounds = 0;
+      const timer = setInterval(async () => {
+        if (state.view !== "graph") { clearInterval(timer); resolve(); return; }
+        rounds += 1;
+        try {
+          const data = await api("/api/graph");
+          renderGraphStats(data.stats || {});
+          const done = (data.stats || {}).linked_docs || 0;
+          if (done > last) { last = done; idle = 0; } else { idle += 1; }
+          if ((total && done >= total) || idle >= 4 || rounds > 150) {
+            clearInterval(timer);
+            await loadGraph();
+            resolve();
+          }
+        } catch (_) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 6000);
+    });
+  }
+
   function graphPoint(evt) {
     const canvas = $("#graph-canvas");
     const rect = canvas.getBoundingClientRect();
@@ -981,11 +1006,23 @@
     $("#graph-doc").addEventListener("change", () => loadGraph());
     $("#graph-rebuild").addEventListener("click", async () => {
       if (!confirm("会用对话模型重新抽取全部文档的实体与关系，耗时较长，确定继续？")) return;
+      const btn = $("#graph-rebuild");
+      btn.disabled = true;
+      btn.textContent = "重建中…";
       try {
         const data = await api("/api/graph/rebuild", { method: "POST", body: {} });
-        toast("已排队重建 " + data.queued + " 篇文档，稍后点刷新查看", "ok");
+        const total = data.queued || 0;
+        if (data.probe && data.probe.status !== "ok") {
+          toast("第一篇没有抽出实体（" + data.probe.status + "），检查对话模型", "err");
+        }
+        toast("已排队 " + total + " 篇，抽取中…", "ok");
+        await watchRebuild(total);
+        toast("图谱重建完成", "ok");
       } catch (err) {
         toast("重建失败：" + err.message, "err");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "重建图谱";
       }
     });
     $("#graph-panel").addEventListener("click", (e) => {

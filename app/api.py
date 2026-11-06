@@ -354,8 +354,22 @@ def graph_rebuild(request: Request, body: GraphRebuildIn | None = None):
         raise HTTPException(status_code=400, detail="图谱已关闭，请先在「设置」里开启")
     if not ctx.runtime.cfg.get("llm_api_key"):
         raise HTTPException(status_code=400, detail="图谱抽取需要对话模型，请先配置")
-    result = ctx.ingestor.rebuild_graph((body.doc_ids if body else None))
-    return result
+
+    wanted = set(body.doc_ids or [])
+    targets = [int(d["id"]) for d in ctx.db.list_documents() if d["status"] == "ready"]
+    if wanted:
+        targets = [t for t in targets if t in wanted]
+    if not targets:
+        return {"queued": 0, "probe": None}
+
+    # 先同步抽第一篇：模型报错、返回为空这类问题要当场告诉用户，
+    # 而不是排完 75 篇后台静默失败
+    probe = kbgraph.build(ctx.runtime, ctx.db, targets[0])
+    if probe.get("status") in ("error", "skipped", "empty"):
+        raise HTTPException(status_code=502, detail=f"抽取失败：{probe.get('message') or probe.get('reason') or probe['status']}")
+    rest = targets[1:]
+    queued = ctx.ingestor.rebuild_graph(rest)["queued"] if rest else 0
+    return {"queued": queued + 1, "probe": probe}
 
 
 @router.get("/backup/export")
