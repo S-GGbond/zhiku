@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import Ctx, router
@@ -104,9 +104,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ctx = request.app.state.ctx
             if not ctx.auth.check(request.cookies.get(COOKIE)):
                 return RedirectResponse("/login", status_code=307)
-            return FileResponse(STATIC_DIR / "index.html")
+            return HTMLResponse(_render_index(), headers={"Cache-Control": "no-store"})
 
     return app
+
+
+def _render_index() -> str:
+    """给静态资源带上文件时间戳，换了 CSS/JS 就是新 URL，绕开浏览器旧缓存。"""
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for name in ("style.css", "app.js"):
+        try:
+            version = int((STATIC_DIR / name).stat().st_mtime)
+        except OSError:
+            version = 0
+        html = html.replace(f"/static/{name}", f"/static/{name}?v={version}")
+    return html
 
 
 def _warm(index: RetrievalIndex) -> None:
