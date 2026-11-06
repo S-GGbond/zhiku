@@ -48,6 +48,34 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
 
+CREATE TABLE IF NOT EXISTS entities (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    norm       TEXT NOT NULL UNIQUE,
+    kind       TEXT DEFAULT '',
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS doc_entities (
+    doc_id    INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    weight    REAL DEFAULT 1.0,
+    PRIMARY KEY (doc_id, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_docent_entity ON doc_entities(entity_id);
+
+CREATE TABLE IF NOT EXISTS relations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    src_id     INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    dst_id     INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    rel        TEXT NOT NULL DEFAULT '相关',
+    doc_id     INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+    created_at REAL NOT NULL,
+    UNIQUE (src_id, dst_id, rel, doc_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rel_src ON relations(src_id);
+CREATE INDEX IF NOT EXISTS idx_rel_dst ON relations(dst_id);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -169,6 +197,7 @@ class Database:
     def delete_document(self, doc_id: int) -> None:
         self.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
         self.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+        self.gc_entities()
         self.bump_version()
 
     def list_documents(self) -> list[dict]:
@@ -269,7 +298,13 @@ class Database:
             doc_cols = [c for c in DOC_COLS if c in have_docs]
             chunk_cols = [c for c in CHUNK_COLS if c in have_chunks]
             have_blobs = {r["name"] for r in conn.execute("PRAGMA incoming.table_info(doc_blobs)")}
+            have_entities = {r["name"] for r in conn.execute("PRAGMA incoming.table_info(entities)")}
+            have_links = {r["name"] for r in conn.execute("PRAGMA incoming.table_info(doc_entities)")}
+            have_relations = {r["name"] for r in conn.execute("PRAGMA incoming.table_info(relations)")}
             with self._write_lock:
+                conn.execute("DELETE FROM relations")
+                conn.execute("DELETE FROM doc_entities")
+                conn.execute("DELETE FROM entities")
                 conn.execute("DELETE FROM doc_blobs")
                 conn.execute("DELETE FROM chunks")
                 conn.execute("DELETE FROM documents")
@@ -280,6 +315,19 @@ class Database:
                 if have_blobs:
                     conn.execute("INSERT INTO doc_blobs(doc_id, data, name, mime)"
                                  " SELECT doc_id, data, name, mime FROM incoming.doc_blobs")
+                if have_entities:
+                    cols = [c for c in ("id", "name", "norm", "kind", "created_at") if c in have_entities]
+                    conn.execute(f"INSERT INTO entities({','.join(cols)})"
+                                 f" SELECT {','.join(cols)} FROM incoming.entities")
+                if have_links:
+                    cols = [c for c in ("doc_id", "entity_id", "weight") if c in have_links]
+                    conn.execute(f"INSERT INTO doc_entities({','.join(cols)})"
+                                 f" SELECT {','.join(cols)} FROM incoming.doc_entities")
+                if have_relations:
+                    cols = [c for c in ("id", "src_id", "dst_id", "rel", "doc_id", "created_at")
+                            if c in have_relations]
+                    conn.execute(f"INSERT INTO relations({','.join(cols)})"
+                                 f" SELECT {','.join(cols)} FROM incoming.relations")
                 conn.execute("DELETE FROM settings")
                 conn.execute("INSERT INTO settings(key, value) SELECT key, value FROM incoming.settings")
                 conn.commit()
@@ -292,6 +340,101 @@ class Database:
 
     def document_titles(self) -> dict[int, str]:
         return {int(r["id"]): r["title"] for r in self.query("SELECT id, title FROM documents")}
+
+    # ---------- 知识图谱 ----------
+    def upsert_entity(self, name: str, norm: str, kind: str = "") -> int:
+        self.execute(
+            "INSERT INTO entities(name, norm, kind, created_at) VALUES(?,?,?,?)"
+            " ON CONFLICT(norm) DO UPDATE SET name = excluded.name,"
+            " kind = CASE WHEN excluded.kind <> '' THEN excluded.kind ELSE entities.kind END",
+            (name, norm, kind, now()),
+        )
+        row = self.query_one("SELECT id FROM entities WHERE norm = ?", (norm,))
+        return int(row["id"]) if row else 0
+
+    def link_doc_entity(self, doc_id: int, entity_id: int, weight: float = 1.0) -> None:
+        self.execute(
+            "INSERT INTO doc_entities(doc_id, entity_id, weight) VALUES(?,?,?)"
+            " ON CONFLICT(doc_id, entity_id) DO UPDATE SET weight = MAX(weight, excluded.weight)",
+            (doc_id, entity_id, weight),
+        )
+
+    def add_relation(self, src_id: int, dst_id: int, rel: str, doc_id: int | None,
+                     weight: float = 1.0) -> None:
+        if not src_id or not dst_id or src_id == dst_id:
+            return
+        self.execute(
+            "INSERT INTO relations(src_id, dst_id, rel, doc_id, created_at) VALUES(?,?,?,?,?)"
+            " ON CONFLICT(src_id, dst_id, rel, doc_id) DO NOTHING",
+            (src_id, dst_id, rel, doc_id, now()),
+        )
+
+    def clear_graph(self, doc_id: int) -> None:
+        self.execute("DELETE FROM relations WHERE doc_id = ?", (doc_id,))
+        self.execute("DELETE FROM doc_entities WHERE doc_id = ?", (doc_id,))
+        self.gc_entities()
+
+    def gc_entities(self) -> None:
+        self.execute(
+            "DELETE FROM entities WHERE id NOT IN (SELECT entity_id FROM doc_entities)"
+        )
+
+    def entities_of_doc(self, doc_id: int) -> list[dict]:
+        rows = self.query(
+            "SELECT e.id, e.name, e.kind, de.weight FROM doc_entities de"
+            " JOIN entities e ON e.id = de.entity_id"
+            " WHERE de.doc_id = ? ORDER BY de.weight DESC, e.id",
+            (doc_id,),
+        )
+        return [dict(r) for r in rows]
+
+    def docs_of_entity(self, entity_id: int, exclude_doc: int | None = None,
+                       limit: int = 20) -> list[dict]:
+        rows = self.query(
+            "SELECT d.id, d.title, d.created_at FROM doc_entities de"
+            " JOIN documents d ON d.id = de.doc_id WHERE de.entity_id = ?"
+            " ORDER BY d.created_at DESC",
+            (entity_id,),
+        )
+        out = [dict(r) for r in rows if int(r["id"]) != exclude_doc]
+        return out[:limit]
+
+    def shared_entity_docs(self, doc_id: int, limit: int = 10) -> list[dict]:
+        """共现同一实体的其他文档：最直接的一类「隐性关联」。"""
+        rows = self.query(
+            "SELECT d.id AS doc_id, d.title, COUNT(*) AS shared,"
+            " GROUP_CONCAT(e.name, '、') AS names FROM doc_entities a"
+            " JOIN doc_entities b ON b.entity_id = a.entity_id AND b.doc_id <> a.doc_id"
+            " JOIN documents d ON d.id = b.doc_id"
+            " JOIN entities e ON e.id = a.entity_id"
+            " WHERE a.doc_id = ? GROUP BY d.id ORDER BY shared DESC, d.created_at DESC LIMIT ?",
+            (doc_id, limit),
+        )
+        return [dict(r) for r in rows]
+
+    def relations_of_entities(self, entity_ids: list[int], limit: int = 40) -> list[dict]:
+        if not entity_ids:
+            return []
+        marks = ",".join("?" * len(entity_ids))
+        rows = self.query(
+            "SELECT r.id, r.src_id, r.dst_id, r.rel, r.doc_id,"
+            " es.name AS src_name, ed.name AS dst_name FROM relations r"
+            f" JOIN entities es ON es.id = r.src_id JOIN entities ed ON ed.id = r.dst_id"
+            f" WHERE r.src_id IN ({marks}) OR r.dst_id IN ({marks})"
+            " ORDER BY r.id DESC LIMIT ?",
+            (*entity_ids, *entity_ids, limit),
+        )
+        return [dict(r) for r in rows]
+
+    def graph_stats(self) -> dict:
+        ent = self.query_one("SELECT COUNT(*) AS n FROM entities")
+        rel = self.query_one("SELECT COUNT(*) AS n FROM relations")
+        linked = self.query_one("SELECT COUNT(DISTINCT doc_id) AS n FROM doc_entities")
+        return {
+            "entities": int(ent["n"]) if ent else 0,
+            "relations": int(rel["n"]) if rel else 0,
+            "linked_docs": int(linked["n"]) if linked else 0,
+        }
 
     # ---------- stats ----------
     def stats(self) -> dict:

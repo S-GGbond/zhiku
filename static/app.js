@@ -88,6 +88,7 @@
     $$(".view").forEach((el) => el.classList.toggle("active", el.id === "view-" + view));
     $$(".nav-item").forEach((el) => el.classList.toggle("active", el.dataset.view === view));
     if (view === "docs") loadDocuments();
+    if (view === "graph") loadGraph();
     if (view === "settings") loadConfig();
   }
 
@@ -108,7 +109,8 @@
     if (tag === "input" || tag === "textarea") return;
     if (e.key === "1") setView("chat");
     if (e.key === "2") setView("docs");
-    if (e.key === "3") setView("settings");
+    if (e.key === "3") setView("graph");
+    if (e.key === "4") setView("settings");
   });
 
   // ---------- 概览 ----------
@@ -411,6 +413,7 @@
       state.docs = data.documents;
       renderDocuments();
       renderScope();
+      fillGraphDocs();
       schedulePolling();
     } catch (err) {
       toast("读取文档失败：" + err.message, "err");
@@ -579,6 +582,422 @@
     }
   }
 
+
+  // ---------- 关系图谱 ----------
+  const graphState = {
+    nodes: [], links: [], scale: 1, ox: 0, oy: 0,
+    selected: null, hover: null, alpha: 1, raf: null, drag: null, pan: null, fitted: false,
+  };
+  const GRAPH_COLORS = {
+    "文档": "#2f6bff", "概念": "#8b5cf6", "系统": "#0ea5e9", "指标": "#14875a",
+    "流程": "#b45309", "人物": "#db2777", "组织": "#0891b2", "技术": "#7c3aed",
+  };
+
+  function graphColor(type) {
+    return GRAPH_COLORS[type] || "#8b5cf6";
+  }
+
+  function renderGraphStats(stats) {
+    const items = [
+      ["实体", stats.entities || 0],
+      ["关系", stats.relations || 0],
+      ["已建图文档", stats.linked_docs || 0],
+      ["当前节点", stats.shown_nodes || 0],
+    ];
+    $("#graph-stats").innerHTML = items.map((it) =>
+      '<span class="gstat"><b>' + it[1] + "</b>" + it[0] + "</span>").join("");
+  }
+
+  function fillGraphDocs() {
+    const sel = $("#graph-doc");
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = '<option value="">全部文档</option>' + state.docs
+      .map((d) => '<option value="' + d.id + '">' + esc(d.title) + "</option>").join("");
+    sel.value = current;
+  }
+
+  async function loadGraph(docId) {
+    const sel = $("#graph-doc");
+    if (!state.docs.length) {
+      try { await loadDocuments(); } catch (_) { /* 忽略 */ }
+    }
+    fillGraphDocs();
+    const focus = docId === undefined
+      ? (sel && sel.value ? Number(sel.value) : 0)
+      : Number(docId || 0);
+    try {
+      const data = await api("/api/graph" + (focus ? "?doc_id=" + focus : ""));
+      renderGraphStats(data.stats || {});
+      $("#graph-empty").classList.toggle("hidden", (data.nodes || []).length > 0);
+      setGraphData(data.nodes || [], data.edges || []);
+    } catch (err) {
+      toast("图谱加载失败：" + err.message, "err");
+    }
+  }
+
+  function setGraphData(nodes, edges) {
+    const count = Math.max(nodes.length, 1);
+    const radius = Math.max(130, Math.min(340, 42 * Math.sqrt(count)));
+    nodes.forEach((n, i) => {
+      const angle = (i / count) * Math.PI * 2;
+      const ring = n.kind === "doc" ? radius * 0.55 : radius;
+      n.x = Math.cos(angle) * ring + (Math.random() - 0.5) * 24;
+      n.y = Math.sin(angle) * ring + (Math.random() - 0.5) * 24;
+      n.vx = 0; n.vy = 0;
+      n.radius = n.kind === "doc"
+        ? 9 + Math.min(5, Math.sqrt(n.size || 1) * 1.6)
+        : 5 + Math.min(7, Math.sqrt(n.size || 1));
+      n.color = n.kind === "doc" ? GRAPH_COLORS["文档"] : graphColor(n.type);
+    });
+    const byId = {};
+    nodes.forEach((n) => { byId[n.id] = n; });
+    const links = [];
+    edges.forEach((e) => {
+      const s = byId[e.source], t = byId[e.target];
+      if (s && t) links.push({ s: s, t: t, rel: e.rel, kind: e.kind });
+    });
+    graphState.nodes = nodes;
+    graphState.links = links;
+    graphState.selected = null;
+    graphState.hover = null;
+    graphState.scale = 1;
+    graphState.ox = 0;
+    graphState.oy = 0;
+    graphState.alpha = 1;
+    graphState.fitted = false;
+    $("#graph-panel").innerHTML = '<p class="muted">点击节点查看详情</p>';
+    startGraphLoop();
+  }
+
+  function startGraphLoop() {
+    if (graphState.raf) cancelAnimationFrame(graphState.raf);
+    const step = () => {
+      if (state.view !== "graph") { graphState.raf = null; return; }
+      if (graphState.alpha > 0.02 && !graphState.pan) {
+        simulateGraph();
+      } else if (!graphState.fitted) {
+        fitGraph();
+        graphState.fitted = true;
+      }
+      drawGraph();
+      graphState.raf = requestAnimationFrame(step);
+    };
+    graphState.raf = requestAnimationFrame(step);
+  }
+
+  function simulateGraph() {
+    const nodes = graphState.nodes, links = graphState.links, alpha = graphState.alpha;
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
+        const d = Math.sqrt(d2);
+        const weight = (a.kind === "doc" || b.kind === "doc") ? 2.2 : 1;
+        const force = 2600 * alpha * weight / d2;
+        const fx = (dx / d) * force, fy = (dy / d) * force;
+        a.vx -= fx; a.vy -= fy;
+        b.vx += fx; b.vy += fy;
+      }
+    }
+    links.forEach((l) => {
+      const dx = l.t.x - l.s.x, dy = l.t.y - l.s.y;
+      const d = Math.max(1, Math.hypot(dx, dy));
+      const ideal = l.kind === "mention" ? 84 : 118;
+      const force = (d - ideal) * 0.03 * alpha;
+      const fx = (dx / d) * force, fy = (dy / d) * force;
+      l.s.vx += fx; l.s.vy += fy;
+      l.t.vx -= fx; l.t.vy -= fy;
+    });
+    nodes.forEach((n) => {
+      n.vx -= n.x * 0.0025 * alpha;
+      n.vy -= n.y * 0.0025 * alpha;
+      if (n === graphState.drag) { n.vx = 0; n.vy = 0; return; }
+      n.vx *= 0.86; n.vy *= 0.86;
+      n.x += n.vx; n.y += n.vy;
+    });
+    graphState.alpha *= 0.975;
+  }
+
+  function fitGraph() {
+    const canvas = $("#graph-canvas");
+    if (!canvas || !graphState.nodes.length) return;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width < 40 || rect.height < 40) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    graphState.nodes.forEach((n) => {
+      minX = Math.min(minX, n.x - n.radius);
+      minY = Math.min(minY, n.y - n.radius);
+      maxX = Math.max(maxX, n.x + n.radius);
+      maxY = Math.max(maxY, n.y + n.radius);
+    });
+    const spanX = Math.max(maxX - minX, 1);
+    const spanY = Math.max(maxY - minY, 1);
+    const pad = 90;
+    const scale = Math.min(1.7, (rect.width - pad * 2) / spanX, (rect.height - pad * 2) / spanY);
+    graphState.scale = Math.max(0.35, scale);
+    graphState.ox = -((minX + maxX) / 2) * graphState.scale - 70;
+    graphState.oy = -((minY + maxY) / 2) * graphState.scale;
+  }
+
+  function graphSurface() {
+    const canvas = $("#graph-canvas");
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(1, Math.floor(rect.width * dpr));
+    const height = Math.max(1, Math.floor(rect.height * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx: ctx, w: rect.width, h: rect.height };
+  }
+
+  function toScreen(node, w, h) {
+    return {
+      x: node.x * graphState.scale + w / 2 + graphState.ox,
+      y: node.y * graphState.scale + h / 2 + graphState.oy,
+    };
+  }
+
+  function drawGraph() {
+    const surface = graphSurface();
+    const ctx = surface.ctx, w = surface.w, h = surface.h;
+    const css = getComputedStyle(document.documentElement);
+    const line = (css.getPropertyValue("--border") || "#e3e6ea").trim();
+    const text = (css.getPropertyValue("--text") || "#16191d").trim();
+    const muted = (css.getPropertyValue("--muted") || "#6b7280").trim();
+    ctx.clearRect(0, 0, w, h);
+    if (!graphState.nodes.length) return;
+
+    const pos = {};
+    graphState.nodes.forEach((n) => { pos[n.id] = toScreen(n, w, h); });
+
+    ctx.lineWidth = 1;
+    graphState.links.forEach((l) => {
+      const a = pos[l.s.id], b = pos[l.t.id];
+      if (!a || !b) return;
+      const active = graphState.selected &&
+        (l.s.id === graphState.selected.id || l.t.id === graphState.selected.id);
+      ctx.beginPath();
+      ctx.setLineDash(l.kind === "cooccur" ? [4, 4] : []);
+      ctx.strokeStyle = active ? l.s.color || line : line;
+      ctx.globalAlpha = active ? 0.9 : 0.55;
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+
+    graphState.nodes.forEach((n) => {
+      const p = pos[n.id];
+      const isSel = graphState.selected && graphState.selected.id === n.id;
+      const isHover = graphState.hover && graphState.hover.id === n.id;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, n.radius + (isSel ? 3 : isHover ? 2 : 0), 0, Math.PI * 2);
+      ctx.fillStyle = n.color;
+      ctx.globalAlpha = isSel || isHover ? 1 : 0.88;
+      ctx.fill();
+      if (isSel) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = text;
+        ctx.globalAlpha = 0.9;
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    });
+
+    // 标签单独一遍：文档优先，放不下的直接跳过，避免互相压字
+    const showLabels = graphState.scale > 1.15 || graphState.nodes.length <= 30;
+    const priority = (n) => (n.kind === "doc" ? 2 : 0)
+      + (graphState.selected && graphState.selected.id === n.id ? 3 : 0)
+      + (graphState.hover && graphState.hover.id === n.id ? 2 : 0);
+    const placed = [];
+    graphState.nodes.slice()
+      .filter((n) => n.kind === "doc" || showLabels
+        || (graphState.selected && graphState.selected.id === n.id)
+        || (graphState.hover && graphState.hover.id === n.id))
+      .sort((a, b) => priority(b) - priority(a))
+      .forEach((n) => {
+        const p = pos[n.id];
+        if (!p) return;
+        const label = n.label.length > 16 ? n.label.slice(0, 16) + "…" : n.label;
+        ctx.font = (n.kind === "doc" ? "600 12px" : "11px") + " system-ui, sans-serif";
+        const width = ctx.measureText(label).width;
+        const hits = (box) => placed.some((r) => box.x < r.x + r.w && box.x + box.w > r.x
+          && box.y < r.y + r.h && box.y + box.h > r.y);
+        let box = { x: p.x - width / 2 - 3, y: p.y + n.radius + 4, w: width + 6, h: 16 };
+        let top = p.y + n.radius + 6;
+        if (hits(box)) {
+          // 下方被占了就翻到节点上方再试一次
+          box = { x: box.x, y: p.y - n.radius - 20, w: box.w, h: box.h };
+          top = p.y - n.radius - 18;
+          if (hits(box)) return;
+        }
+        placed.push(box);
+        ctx.fillStyle = n.kind === "doc" ? text : muted;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillText(label, p.x, top);
+      });
+  }
+
+  function graphPoint(evt) {
+    const canvas = $("#graph-canvas");
+    const rect = canvas.getBoundingClientRect();
+    return { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
+  }
+
+  function graphPick(point) {
+    const canvas = $("#graph-canvas");
+    const rect = canvas.getBoundingClientRect();
+    let best = null, bestDist = Infinity;
+    graphState.nodes.forEach((n) => {
+      const p = toScreen(n, rect.width, rect.height);
+      const d = Math.hypot(p.x - point.x, p.y - point.y);
+      if (d < n.radius + 8 && d < bestDist) { best = n; bestDist = d; }
+    });
+    return best;
+  }
+
+  async function loadRelatedDocs(docId) {
+    const box = $("#gp-related");
+    if (!box) return;
+    try {
+      const data = await api("/api/documents/" + docId + "/related?limit=8");
+      const list = data.related || [];
+      if (!list.length) {
+        box.innerHTML = '<div class="gp-sub">关联文档</div><p class="muted">暂无关联</p>';
+        return;
+      }
+      box.innerHTML = '<div class="gp-sub">关联文档</div>' + list.map((r) => {
+        const note = r.shared.length ? "共同实体：" + r.shared.join("、")
+          : (r.relations[0] ? r.relations[0].rel + "：" + r.relations[0].via + " → " + r.relations[0].to : "");
+        return '<button class="gp-link" data-doc="' + r.doc_id + '"><b>' + esc(r.title) +
+          "</b><span>" + esc(note) + "</span></button>";
+      }).join("");
+    } catch (_) {
+      box.innerHTML = "";
+    }
+  }
+
+  function showGraphNode(node) {
+    const panel = $("#graph-panel");
+    if (!node) {
+      panel.innerHTML = '<p class="muted">点击节点查看详情</p>';
+      return;
+    }
+    if (node.kind === "doc") {
+      const ents = graphState.links
+        .filter((l) => l.s.id === node.id && l.kind === "mention")
+        .map((l) => l.t.label);
+      panel.innerHTML = "<h4>" + esc(node.label) + "</h4>" +
+        '<p class="muted">文档 · ' + ents.length + " 个实体</p>" +
+        '<div class="gp-tags">' + ents.slice(0, 24).map((t) => '<span class="chip">' + esc(t) + "</span>").join("") + "</div>" +
+        '<div id="gp-related"><p class="muted">加载关联文档…</p></div>';
+      loadRelatedDocs(node.ref);
+      return;
+    }
+    const docs = graphState.links
+      .filter((l) => l.t.id === node.id && l.kind === "mention")
+      .map((l) => l.s.label);
+    const rels = graphState.links
+      .filter((l) => l.kind === "relation" && (l.s.id === node.id || l.t.id === node.id))
+      .map((l) => l.s.id === node.id
+        ? node.label + " —" + l.rel + "→ " + l.t.label
+        : l.s.label + " —" + l.rel + "→ " + node.label);
+    panel.innerHTML = "<h4>" + esc(node.label) + "</h4>" +
+      '<p class="muted">' + esc(node.type || "实体") + " · 出现在 " + docs.length + " 篇文档</p>" +
+      (docs.length ? '<div class="gp-sub">所属文档</div><div class="gp-tags">' +
+        docs.slice(0, 12).map((t) => '<span class="chip">' + esc(t) + "</span>").join("") + "</div>" : "") +
+      (rels.length ? '<div class="gp-sub">关系</div><ul class="gp-list">' +
+        rels.slice(0, 12).map((t) => "<li>" + esc(t) + "</li>").join("") + "</ul>" : "");
+  }
+
+  function graphZoomAt(factor, point) {
+    const canvas = $("#graph-canvas");
+    const rect = canvas.getBoundingClientRect();
+    const next = Math.max(0.3, Math.min(3.2, graphState.scale * factor));
+    // 保持鼠标所指的那一点在缩放前后位置不变
+    const wx = (point.x - rect.width / 2 - graphState.ox) / graphState.scale;
+    const wy = (point.y - rect.height / 2 - graphState.oy) / graphState.scale;
+    graphState.scale = next;
+    graphState.ox = point.x - rect.width / 2 - wx * next;
+    graphState.oy = point.y - rect.height / 2 - wy * next;
+  }
+
+  (function bindGraph() {
+    const canvas = $("#graph-canvas");
+    if (!canvas) return;
+    canvas.addEventListener("mousedown", (e) => {
+      const point = graphPoint(e);
+      const node = graphPick(point);
+      if (node) {
+        graphState.drag = node;
+        graphState.selected = node;
+        showGraphNode(node);
+      } else {
+        graphState.pan = { x: e.clientX, y: e.clientY, ox: graphState.ox, oy: graphState.oy };
+      }
+    });
+    canvas.addEventListener("mousemove", (e) => {
+      const point = graphPoint(e);
+      if (graphState.drag) {
+        const rect = canvas.getBoundingClientRect();
+        graphState.drag.x = (point.x - rect.width / 2 - graphState.ox) / graphState.scale;
+        graphState.drag.y = (point.y - rect.height / 2 - graphState.oy) / graphState.scale;
+        graphState.alpha = Math.max(graphState.alpha, 0.25);
+        return;
+      }
+      if (graphState.pan) {
+        graphState.ox = graphState.pan.ox + (e.clientX - graphState.pan.x);
+        graphState.oy = graphState.pan.oy + (e.clientY - graphState.pan.y);
+        return;
+      }
+      graphState.hover = graphPick(point);
+      canvas.style.cursor = graphState.hover ? "pointer" : "grab";
+    });
+    const release = () => { graphState.drag = null; graphState.pan = null; };
+    canvas.addEventListener("mouseup", release);
+    canvas.addEventListener("mouseleave", release);
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      graphZoomAt(e.deltaY < 0 ? 1.12 : 0.89, graphPoint(e));
+    }, { passive: false });
+    canvas.addEventListener("dblclick", (e) => {
+      const node = graphPick(graphPoint(e));
+      if (!node) return;
+      graphState.ox = -node.x * 1.6;
+      graphState.oy = -node.y * 1.6;
+      graphState.scale = 1.6;
+    });
+
+    $("#graph-refresh").addEventListener("click", () => loadGraph());
+    $("#graph-doc").addEventListener("change", () => loadGraph());
+    $("#graph-rebuild").addEventListener("click", async () => {
+      if (!confirm("会用对话模型重新抽取全部文档的实体与关系，耗时较长，确定继续？")) return;
+      try {
+        const data = await api("/api/graph/rebuild", { method: "POST", body: {} });
+        toast("已排队重建 " + data.queued + " 篇文档，稍后点刷新查看", "ok");
+      } catch (err) {
+        toast("重建失败：" + err.message, "err");
+      }
+    });
+    $("#graph-panel").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-doc]");
+      if (!btn) return;
+      const docId = Number(btn.dataset.doc);
+      $("#graph-doc").value = String(docId);
+      loadGraph(docId);
+    });
+    window.addEventListener("resize", () => { if (state.view === "graph") drawGraph(); });
+  })();
+
   // ---------- 设置 ----------
   const CONFIG_FIELDS = [
     "embed_base_url", "embed_model", "llm_base_url", "llm_model",
@@ -598,6 +1017,8 @@
     llmKey.value = "";
     llmKey.placeholder = cfg.llm_api_key_set ? "已设置，留空则不修改" : "...";
     $("#query_rewrite").checked = !!cfg.query_rewrite;
+    $("#graph_enabled").checked = cfg.graph_enabled !== false;
+    $("#graph_expand").checked = cfg.graph_expand !== false;
     const hasToken = !!cfg.api_token_set;
     $("#api_token_toggle").checked = hasToken;
     $("#api_token_wrap").classList.toggle("hidden", !hasToken);
@@ -629,6 +1050,8 @@
     if (embedKey) patch.embed_api_key = embedKey;
     if (llmKey) patch.llm_api_key = llmKey;
     patch.query_rewrite = $("#query_rewrite").checked;
+    patch.graph_enabled = $("#graph_enabled").checked;
+    patch.graph_expand = $("#graph_expand").checked;
     if ($("#api_token_toggle").checked) {
       const token = $("#api_token").value.trim();
       if (token) patch.api_token = token;

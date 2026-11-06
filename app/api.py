@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import backup as kbbackup
+from . import graph as kbgraph
 from . import rag
 from .auth import COOKIE, SESSION_TTL, AuthError
 from .parsers import SUPPORTED_EXTS
@@ -81,6 +82,10 @@ class TestIn(BaseModel):
 
 class ReindexIn(BaseModel):
     scope: str = "embeddings"
+
+
+class GraphRebuildIn(BaseModel):
+    doc_ids: list[int] | None = None
 
 
 class AccountIn(BaseModel):
@@ -327,6 +332,32 @@ def reindex_all(request: Request, body: ReindexIn):
 
 
 # ---------- 备份与迁移 ----------
+@router.get("/documents/{doc_id}/related")
+def document_related(request: Request, doc_id: int, limit: int = 8):
+    ctx = ctx_of(request)
+    if not ctx.db.get_document(doc_id):
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {"doc_id": doc_id, "related": kbgraph.related(ctx.db, doc_id, limit=max(1, min(limit, 30)))}
+
+
+# ---------- 知识图谱 ----------
+@router.get("/graph")
+def graph_view(request: Request, doc_id: int | None = None, limit: int = 40):
+    ctx = ctx_of(request)
+    return kbgraph.view(ctx.db, doc_id=doc_id, limit_docs=max(1, min(limit, 200)))
+
+
+@router.post("/graph/rebuild")
+def graph_rebuild(request: Request, body: GraphRebuildIn | None = None):
+    ctx = ctx_of(request)
+    if not ctx.runtime.get("graph_enabled", True):
+        raise HTTPException(status_code=400, detail="图谱已关闭，请先在「设置」里开启")
+    if not ctx.runtime.cfg.get("llm_api_key"):
+        raise HTTPException(status_code=400, detail="图谱抽取需要对话模型，请先配置")
+    result = ctx.ingestor.rebuild_graph((body.doc_ids if body else None))
+    return result
+
+
 @router.get("/backup/export")
 def backup_export(request: Request):
     """导出整库备份（数据库 + 原始文件 + 笔记 + 账号与配置）。"""

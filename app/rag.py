@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Iterator
 
+from . import graph as kbgraph
+
 SYSTEM_PROMPT = """你是严谨的知识库问答助手。请遵守：
 1. 只能依据【资料】中的内容作答，不得使用资料外的知识或自行推测。
 2. 每处结论后用 [编号] 标注来源，例如「入职时间是 2024-03-01 [1]」。
@@ -99,15 +101,32 @@ def prepare(runtime, index, question: str, history: list[dict] | None = None,
         doc_ids=doc_ids,
     )
     hits = result["hits"]
+    expanded = _expand(runtime, index, hits, search_query)
     messages = build_messages(question, hits, history, int(cfg["max_context_chars"]))
+    meta = dict(result["meta"])
+    meta["graph_expanded"] = expanded
     return {
         "hits": hits,
         "sources": _sources(hits),
         "messages": messages,
         "search_query": search_query,
         "rewritten": rewritten,
-        "meta": result["meta"],
+        "meta": meta,
     }
+
+
+def _expand(runtime, index, hits: list[dict], question: str) -> int:
+    """沿知识图谱补一跳邻居片段；就地修改 hits，返回补充条数。"""
+    if not hits or not runtime.get("graph_expand", True):
+        return 0
+    try:
+        extra = kbgraph.expand_hits(index, runtime.db, hits, question)
+    except Exception:  # noqa: BLE001 图谱只是加分项，坏了不能影响检索
+        return 0
+    if not extra:
+        return 0
+    hits.extend(extra)
+    return len(extra)
 
 
 NO_HIT_ANSWER = "知识库中没有找到相关依据。可以换一种说法再问，或先上传包含该主题的文档。"
@@ -117,10 +136,13 @@ def retrieve(runtime, index, question: str, doc_ids: list[int] | None = None,
              top_k: int | None = None) -> dict:
     """不调用对话模型，只返回检索到的原文片段。"""
     result = index.search(question, final_k=top_k, doc_ids=doc_ids)
+    hits = result["hits"]
+    meta = dict(result["meta"])
+    meta["graph_expanded"] = _expand(runtime, index, hits, question)
     return {
-        "hits": result["hits"],
-        "sources": _sources(result["hits"]),
-        "retrieval": result["meta"],
+        "hits": hits,
+        "sources": _sources(hits),
+        "retrieval": meta,
     }
 
 

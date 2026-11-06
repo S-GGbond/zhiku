@@ -19,9 +19,10 @@
     </div>
 
     <nav class="nav">
-      <button class="nav-item active" data-view="chat"><span>对话</span><kbd>1</kbd></button>
-      <button class="nav-item" data-view="docs"><span>文档</span><kbd>2</kbd></button>
-      <button class="nav-item" data-view="settings"><span>设置</span><kbd>3</kbd></button>
+      <button class="nav-item active" data-view="chat"><span>对话</span></button>
+      <button class="nav-item" data-view="docs"><span>文档</span></button>
+      <button class="nav-item" data-view="graph"><span>图谱</span></button>
+      <button class="nav-item" data-view="settings"><span>设置</span></button>
     </nav>
 
     <div class="side-stats">
@@ -124,6 +125,41 @@
       </div>
     </section>
 
+    <!-- ========== 图谱 ========== -->
+    <section class="view" id="view-graph">
+      <header class="view-head">
+        <div>
+          <h2>关系图谱</h2>
+          <p class="sub">文档与实体之间的连接：实线是「提及 / 关系」，虚线是同一实体跨文档共现</p>
+        </div>
+        <div class="head-actions">
+          <select id="graph-doc" class="select"><option value="">全部文档</option></select>
+          <button class="ghost" id="graph-refresh">刷新</button>
+          <button class="ghost" id="graph-rebuild">重建图谱</button>
+        </div>
+      </header>
+
+      <div class="graph-stats" id="graph-stats"></div>
+
+      <div class="graph-wrap">
+        <canvas id="graph-canvas"></canvas>
+        <div class="graph-legend">
+          <span><i class="dot doc"></i>文档</span>
+          <span><i class="dot ent"></i>实体</span>
+          <span><i class="line solid"></i>提及 / 关系</span>
+          <span><i class="line dash"></i>共现</span>
+        </div>
+        <aside class="graph-panel" id="graph-panel">
+          <p class="muted">点击节点查看详情</p>
+        </aside>
+        <div class="graph-empty hidden" id="graph-empty">
+          <h3>还没有关系数据</h3>
+          <p>图谱在文档入库时自动抽取，需要先配置对话模型。已有文档可以点右上角「重建图谱」补齐。</p>
+        </div>
+        <div class="graph-hint">拖拽节点或空白处 · 滚轮缩放 · 双击节点聚焦</div>
+      </div>
+    </section>
+
     <!-- ========== 设置 ========== -->
     <section class="view" id="view-settings">
       <header class="view-head">
@@ -170,6 +206,8 @@
             <label>上下文上限（字）<input id="max_context_chars" type="number" min="800" max="30000" /></label>
           </div>
           <label class="check"><input type="checkbox" id="query_rewrite" /> 多轮对话时改写检索问题</label>
+          <label class="check"><input type="checkbox" id="graph_enabled" /> 入库时抽取实体与关系（知识图谱）</label>
+          <label class="check"><input type="checkbox" id="graph_expand" /> 检索时沿图谱扩展一跳关联片段</label>
           <label class="check"><input type="checkbox" id="api_token_toggle" /> 为 API 启用访问令牌</label>
           <label id="api_token_wrap" class="hidden">访问令牌<input id="api_token" type="password" placeholder="Bearer Token" /></label>
         </section>

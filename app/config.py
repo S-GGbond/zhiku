@@ -33,6 +33,10 @@ DEFAULTS: dict[str, Any] = {
     "final_k": 6,
     "max_context_chars": 6000,
     "query_rewrite": True,
+    # 知识图谱
+    "graph_enabled": True,
+    "graph_expand": True,
+    "graph_max_chars": 6000,
     # 上传
     "max_upload_mb": 50,
 }
@@ -60,6 +64,9 @@ _ENV_MAP = {
     "FINAL_K": ("final_k", int),
     "MAX_CONTEXT_CHARS": ("max_context_chars", int),
     "QUERY_REWRITE": ("query_rewrite", bool),
+    "GRAPH_ENABLED": ("graph_enabled", bool),
+    "GRAPH_EXPAND": ("graph_expand", bool),
+    "GRAPH_MAX_CHARS": ("graph_max_chars", int),
     "MAX_UPLOAD_MB": ("max_upload_mb", int),
 }
 
@@ -173,4 +180,6 @@ def normalize_patch(patch: dict[str, Any]) -> dict[str, Any]:
         clean["embed_batch"] = max(1, min(128, clean["embed_batch"]))
     if "llm_temperature" in clean:
         clean["llm_temperature"] = max(0.0, min(1.5, clean["llm_temperature"]))
+    if "graph_max_chars" in clean:
+        clean["graph_max_chars"] = max(1000, min(20000, clean["graph_max_chars"]))
     return clean

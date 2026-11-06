@@ -118,11 +118,23 @@ class RetrievalIndex:
         self.matrix = matrix
         self.vec_rows = vec_rows
         self.doc_ids = np.array([e["doc_id"] for e in entries], dtype=np.int64)
+        self._qvec = None
 
     def invalidate(self) -> None:
         self._version = -1
 
     # ---------- 检索 ----------
+    def query_vector(self, query: str):
+        """同一句查询只向量化一次：主检索与图谱扩展共用同一个向量。"""
+        cached = getattr(self, "_qvec", None)
+        if cached and cached[0] == query:
+            return cached[1]
+        if not self.matrix.size:
+            return None
+        vec = self.runtime.embed_texts([query])[0]
+        self._qvec = (query, vec)
+        return vec
+
     def search(self, query: str, *, top_k_vector: int | None = None, top_k_keyword: int | None = None,
                final_k: int | None = None, doc_ids: list[int] | None = None) -> dict:
         self.ensure_loaded()
@@ -146,8 +158,8 @@ class RetrievalIndex:
         vec_used = False
         if self.matrix.size:
             try:
-                qvec = self.runtime.embed_texts([query])[0]
-                if qvec.shape[0] == self.matrix.shape[1]:
+                qvec = self.query_vector(query)
+                if qvec is not None and qvec.shape[0] == self.matrix.shape[1]:
                     scores = self.matrix @ qvec
                     vec_scores[self.vec_rows] = scores
                     vec_used = True

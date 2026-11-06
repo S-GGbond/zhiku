@@ -12,6 +12,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from . import graph as kbgraph
 from .chunker import chunk_blocks
 from .parsers import ParseError, fetch_url, parse_file
 
@@ -242,6 +243,17 @@ class Ingestor:
             raise FileNotFoundError("原始内容已不存在，请重新上传")
         return self.db.get_document(doc_id)
 
+    def rebuild_graph(self, doc_ids: list[int] | None = None) -> dict:
+        """按文档重建关系图谱（重新调模型抽取），后台排队执行。"""
+        wanted = set(doc_ids or [])
+        docs = self.db.list_documents()
+        targets = [int(d["id"]) for d in docs if d["status"] == "ready"]
+        if wanted:
+            targets = [i for i in targets if i in wanted]
+        for doc_id in targets:
+            self._submit(doc_id, lambda d=doc_id: kbgraph.build(self.runtime, self.db, d))
+        return {"queued": len(targets)}
+
     def reembed_all(self) -> dict:
         docs = self.db.list_documents()
         targets = [d["id"] for d in docs if d["num_chunks"]]
@@ -309,6 +321,8 @@ class Ingestor:
             title=current.get("title") or parsed.title,
         )
         self.index.invalidate()
+        # 建图放在入库之后：抽取失败只影响图谱，不影响文档可检索
+        kbgraph.build(self.runtime, self.db, doc_id, text="\n".join(c["text"] for c in chunks))
 
     def _run_reembed(self, doc_id: int) -> None:
         rows = self.db.chunks_of(doc_id)
