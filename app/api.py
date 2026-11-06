@@ -372,6 +372,30 @@ def graph_rebuild(request: Request, body: GraphRebuildIn | None = None):
     return {"queued": queued + 1, "probe": probe}
 
 
+@router.get("/graph/context")
+def graph_context(request: Request, kind: str = "entity", ref: int = 0,
+                  page: int = 1, size: int = 6):
+    """双击节点时看正文：文档取自身片段，实体取提到它的片段，都分页。"""
+    ctx = ctx_of(request)
+    page = max(1, int(page))
+    size = max(1, min(int(size), 20))
+    if kind == "doc":
+        doc = ctx.db.get_document(ref)
+        if not doc:
+            raise HTTPException(status_code=404, detail="文档不存在")
+        title = doc["title"]
+        items, total = ctx.db.chunks_page(ref, page, size)
+    else:
+        row = ctx.db.query_one("SELECT name FROM entities WHERE id = ?", (ref,))
+        if not row:
+            raise HTTPException(status_code=404, detail="实体不存在")
+        title = row["name"]
+        items, total = ctx.db.chunks_mentioning(title, page, size)
+    pages = max(1, (total + size - 1) // size)
+    return {"title": title, "kind": kind, "ref": ref, "page": page, "size": size,
+            "total": total, "pages": pages, "items": items}
+
+
 @router.get("/backup/export")
 def backup_export(request: Request):
     """导出整库备份（数据库 + 原始文件 + 笔记 + 账号与配置）。"""

@@ -413,7 +413,6 @@
       state.docs = data.documents;
       renderDocuments();
       renderScope();
-      fillGraphDocs();
       schedulePolling();
     } catch (err) {
       toast("读取文档失败：" + err.message, "err");
@@ -587,6 +586,7 @@
   const graphState = {
     nodes: [], links: [], scale: 1, ox: 0, oy: 0,
     selected: null, hover: null, alpha: 1, raf: null, drag: null, pan: null, fitted: false,
+    ctxNode: null,
   };
   const GRAPH_COLORS = {
     "文档": "#2f6bff", "概念": "#8b5cf6", "系统": "#0ea5e9", "指标": "#14875a",
@@ -608,26 +608,10 @@
       '<span class="gstat"><b>' + it[1] + "</b>" + it[0] + "</span>").join("");
   }
 
-  function fillGraphDocs() {
-    const sel = $("#graph-doc");
-    if (!sel) return;
-    const current = sel.value;
-    sel.innerHTML = '<option value="">全部文档</option>' + state.docs
-      .map((d) => '<option value="' + d.id + '">' + esc(d.title) + "</option>").join("");
-    sel.value = current;
-  }
-
-  async function loadGraph(docId) {
-    const sel = $("#graph-doc");
-    if (!state.docs.length) {
-      try { await loadDocuments(); } catch (_) { /* 忽略 */ }
-    }
-    fillGraphDocs();
-    const focus = docId === undefined
-      ? (sel && sel.value ? Number(sel.value) : 0)
-      : Number(docId || 0);
+  async function loadGraph() {
+    // 不再按文档筛选：一次看全库，实体本来就跨文档共用同一个节点
     try {
-      const data = await api("/api/graph" + (focus ? "?doc_id=" + focus : ""));
+      const data = await api("/api/graph");
       renderGraphStats(data.stats || {});
       $("#graph-empty").classList.toggle("hidden", (data.nodes || []).length > 0);
       setGraphData(data.nodes || [], data.edges || []);
@@ -903,7 +887,7 @@
       box.innerHTML = '<div class="gp-sub">关联文档</div>' + list.map((r) => {
         const note = r.shared.length ? "共同实体：" + r.shared.join("、")
           : (r.relations[0] ? r.relations[0].rel + "：" + r.relations[0].via + " → " + r.relations[0].to : "");
-        return '<button class="gp-link" data-doc="' + r.doc_id + '"><b>' + esc(r.title) +
+        return '<button class="gp-link" data-doc="' + r.doc_id + '" data-title="' + esc(r.title) + '"><b>' + esc(r.title) +
           "</b><span>" + esc(note) + "</span></button>";
       }).join("");
     } catch (_) {
@@ -942,6 +926,41 @@
         docs.slice(0, 12).map((t) => '<span class="chip">' + esc(t) + "</span>").join("") + "</div>" : "") +
       (rels.length ? '<div class="gp-sub">关系</div><ul class="gp-list">' +
         rels.slice(0, 12).map((t) => "<li>" + esc(t) + "</li>").join("") + "</ul>" : "");
+  }
+
+  async function openGraphContext(node, page = 1) {
+    graphState.ctxNode = node;
+    $("#modal-title").textContent = node.label + (node.kind === "doc" ? " · 文档片段" : " · 相关内容");
+    $("#modal-body").innerHTML = '<p class="muted">加载中…</p>';
+    $("#modal").classList.remove("hidden");
+    try {
+      const kind = node.kind === "doc" ? "doc" : "entity";
+      const data = await api("/api/graph/context?kind=" + kind + "&ref=" + node.ref +
+        "&page=" + page + "&size=5");
+      renderGraphContext(data);
+    } catch (err) {
+      $("#modal-body").innerHTML = '<p class="test-result err">' + esc(err.message) + "</p>";
+    }
+  }
+
+  function renderGraphContext(data) {
+    const body = $("#modal-body");
+    if (!data.items || !data.items.length) {
+      body.textContent = "没有找到包含「" + data.title + "」的正文片段。";
+      return;
+    }
+    const items = data.items.map((it) => {
+      const leaf = String(it.heading || "").split(">").pop().trim();
+      const meta = [it.doc_title, it.page ? "第 " + it.page + " 页" : "", leaf].filter(Boolean).join(" · ");
+      return '<div class="ctx-item"><div class="ctx-head">' + esc(meta) +
+        '</div><div class="ctx-text">' + esc(it.text) + "</div></div>";
+    }).join("");
+    const pager = '<div class="pager">' +
+      '<button class="ghost" data-page="' + (data.page - 1) + '"' + (data.page <= 1 ? " disabled" : "") + ">上一页</button>" +
+      '<span class="muted">第 ' + data.page + " / " + data.pages + " 页 · 共 " + data.total + " 段</span>" +
+      '<button class="ghost" data-page="' + (data.page + 1) + '"' + (data.page >= data.pages ? " disabled" : "") + ">下一页</button>" +
+      "</div>";
+    body.innerHTML = items + pager;
   }
 
   function graphZoomAt(factor, point) {
@@ -996,14 +1015,10 @@
     }, { passive: false });
     canvas.addEventListener("dblclick", (e) => {
       const node = graphPick(graphPoint(e));
-      if (!node) return;
-      graphState.ox = -node.x * 1.6;
-      graphState.oy = -node.y * 1.6;
-      graphState.scale = 1.6;
+      if (node) openGraphContext(node);
     });
 
     $("#graph-refresh").addEventListener("click", () => loadGraph());
-    $("#graph-doc").addEventListener("change", () => loadGraph());
     $("#graph-rebuild").addEventListener("click", async () => {
       if (!confirm("会用对话模型重新抽取全部文档的实体与关系，耗时较长，确定继续？")) return;
       const btn = $("#graph-rebuild");
@@ -1028,9 +1043,12 @@
     $("#graph-panel").addEventListener("click", (e) => {
       const btn = e.target.closest("[data-doc]");
       if (!btn) return;
-      const docId = Number(btn.dataset.doc);
-      $("#graph-doc").value = String(docId);
-      loadGraph(docId);
+      openGraphContext({ kind: "doc", ref: Number(btn.dataset.doc), label: btn.dataset.title || "文档" });
+    });
+    $("#modal-body").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-page]");
+      if (!btn || !graphState.ctxNode) return;
+      openGraphContext(graphState.ctxNode, Number(btn.dataset.page));
     });
     window.addEventListener("resize", () => { if (state.view === "graph") drawGraph(); });
   })();

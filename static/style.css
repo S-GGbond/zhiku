@@ -362,3 +362,14 @@ select.select {
   .graph-wrap { margin: 12px 14px 16px; }
   .graph-stats { padding: 12px 14px 0; }
 }
+
+/* 图谱节点内容弹窗 */
+.ctx-item {
+  border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px;
+  margin-bottom: 10px; background: var(--panel-2);
+}
+.ctx-head { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.ctx-text { white-space: pre-wrap; line-height: 1.75; }
+.pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 4px 0 2px; }
+.pager .muted { color: var(--muted); font-size: 12px; }
+.pager button:disabled { opacity: .45; cursor: default; }

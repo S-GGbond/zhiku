@@ -10,15 +10,20 @@ log = logging.getLogger("rag.graph")
 
 EXTRACT_PROMPT = """你是知识图谱抽取器。读下面这篇文档，抽出实体和它们之间的关系，只输出 JSON。
 
-输出格式：
-{"entities":[{"name":"实体名","kind":"概念|人物|组织|系统|指标|流程|文件"}],
- "relations":[{"src":"实体名A","rel":"关系","dst":"实体名B"}]}
+输出格式（关系写在前面，实体写在后面）：
+{"relations":[{"src":"实体名A","rel":"关系","dst":"实体名B"}],
+ "entities":[{"name":"实体名","kind":"概念|人物|组织|系统|指标|流程|文件"}]}
 
 要求：
-1. 实体 5-12 个，优先专有名词：系统名、模块名、指标名、算法名、项目名、关键概念。不要抽「方法」「内容」「问题」「情况」这类空泛词。
-2. 关系 3-10 条，src 与 dst 必须是 entities 里出现过的 name；rel 用 2-6 个字的动词或动词短语，如「依赖」「导致」「属于」「替代」「约束」「产出」「包含」。
+1. 实体最多 10 个（名称不超过 12 个字），优先专有名词：系统名、模块名、指标名、算法名、项目名、人员、关键概念。不要抽「方法」「内容」「问题」「情况」这类空泛词。
+2. 关系 6-12 条，src 与 dst 必须是 entities 里出现过的 name；rel 用 2-6 个字的动词或动词短语，如「依赖」「导致」「属于」「替代」「约束」「产出」「包含」「解决」「对应」。
+   同一篇里只要两处内容有实质联系（同一流程的上下游、同一指标的来源、方案与它解决的问题）就连一条边，宁可多连也不要漏。
 3. 只写文档中明确支持的，推测出来的不要写。确实没有关系时 relations 返回 []。
-4. 只输出 JSON 本身，不要解释，不要 markdown 代码块。"""
+4. 只输出 JSON 本身，不要解释，不要 markdown 代码块。
+5. 写成一行紧凑 JSON，不要缩进换行，避免输出被长度截断。"""
+
+RETRY_PROMPT = """你上一次的输出不是合法 JSON，或者被长度截断了。请重新输出：
+只给一行紧凑 JSON（不要解释、不要代码块、不要缩进），实体不超过 8 个，关系不超过 10 条。"""
 
 ENTITY_KINDS = {
     "概念", "人物", "组织", "系统", "指标", "流程", "文件", "产品", "技术",
@@ -59,6 +64,23 @@ def _valid(name: str) -> bool:
     return True
 
 
+def _scavenge(raw: str) -> dict:
+    """输出被截断时，按对象片段把能认的实体/关系捡回来，别整篇浪费掉。"""
+    entities, relations = [], []
+    for chunk in re.findall(r"\{[^{}]{0,220}\}", raw or ""):
+        try:
+            obj = json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if "name" in obj:
+            entities.append(obj)
+        elif {"src", "dst", "rel"} <= set(obj):
+            relations.append(obj)
+    return {"entities": entities, "relations": relations}
+
+
 def _loads(raw: str) -> dict | None:
     text = (raw or "").strip()
     if text.startswith("```"):
@@ -87,6 +109,23 @@ def extract(llm, title: str, text: str, max_chars: int = 6000) -> dict:
     )
     data = _loads(raw)
     if not data:
+        salvaged = _scavenge(raw)
+        if salvaged["entities"] or salvaged["relations"]:
+            log.info("抽取输出不完整，按片段回收：实体 %s，关系 %s",
+                     len(salvaged["entities"]), len(salvaged["relations"]))
+            data = salvaged
+    if not data:
+        # 常见原因是输出被 max_tokens 截断；收紧要求再试一次
+        log.warning("图谱抽取返回无法解析，重试一次：%s", (raw or "")[:120])
+        raw = llm.complete(
+            [{"role": "system", "content": RETRY_PROMPT},
+             {"role": "user", "content": prompt}],
+            max_tokens=1500,
+            temperature=0.0,
+            timeout=90,
+        )
+        data = _loads(raw) or _scavenge(raw)
+    if not data or not (data.get("entities") or data.get("relations")):
         log.warning("图谱抽取返回无法解析：%s", (raw or "")[:120])
         return {"entities": [], "relations": []}
 
@@ -101,14 +140,27 @@ def extract(llm, title: str, text: str, max_chars: int = 6000) -> dict:
         kind = str(item.get("kind") or "").strip()
         entities[norm] = {"name": name, "norm": norm, "kind": kind if kind in ENTITY_KINDS else "概念"}
 
+    # 实体太多会把输出撑爆、图也会糊；按在正文里的出现次数只留前 10 个
+    if len(entities) > 10:
+        ranked = sorted(entities.values(), key=lambda e: text.count(e["name"]), reverse=True)[:10]
+        entities = {e["norm"]: e for e in ranked}
+
     relations: list[dict] = []
     seen_rel: set[tuple[str, str, str]] = set()
     for item in data.get("relations") or []:
         if not isinstance(item, dict):
             continue
-        src, dst = normalize(item.get("src")), normalize(item.get("dst"))
+        src_name, dst_name = _clean_name(item.get("src")), _clean_name(item.get("dst"))
         rel = _REL_CLEAN.sub("", str(item.get("rel") or "")).strip()[:12]
-        if not rel or src not in entities or dst not in entities or src == dst:
+        if not rel or not src_name or not dst_name:
+            continue
+        # 关系里出现、实体表里却没有（输出被截断时很常见）就补个节点，别把边丢掉
+        for name in (src_name, dst_name):
+            norm = normalize(name)
+            if norm and norm not in entities and _valid(name) and len(entities) < 14:
+                entities[norm] = {"name": name, "norm": norm, "kind": "概念"}
+        src, dst = normalize(src_name), normalize(dst_name)
+        if src not in entities or dst not in entities or src == dst:
             continue
         key = (src, rel, dst)
         if key in seen_rel:
@@ -117,6 +169,29 @@ def extract(llm, title: str, text: str, max_chars: int = 6000) -> dict:
         relations.append({"src": src, "dst": dst, "rel": rel})
 
     return {"entities": list(entities.values()), "relations": relations}
+
+
+def extract_multi(llm, title: str, text: str, max_chars: int = 3000,
+                  window: int = 1000) -> dict:
+    """长文档按小窗分批抽：单次输出短，就不会因为截断把整篇的实体和关系都丢掉。"""
+    body = (text or "")[:max_chars]
+    windows = [body[i:i + window] for i in range(0, len(body), window)] or [""]
+    entities: dict[str, dict] = {}
+    relations: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for piece in windows:
+        if not piece.strip():
+            continue
+        data = extract(llm, title, piece, max_chars=window)
+        for ent in data["entities"]:
+            entities.setdefault(ent["norm"], ent)
+        for rel in data["relations"]:
+            key = (rel["src"], rel["rel"], rel["dst"])
+            if key in seen:
+                continue
+            seen.add(key)
+            relations.append(rel)
+    return {"entities": list(entities.values())[:24], "relations": relations[:40]}
 
 
 def store(db, doc_id: int, data: dict, text: str = "") -> dict:
@@ -159,11 +234,11 @@ def build(runtime, db, doc_id: int, text: str | None = None) -> dict:
 
     cap = int(runtime.get("graph_max_chars", 6000))
     try:
-        data = extract(runtime.llm(), doc.get("title") or "", text, max_chars=cap)
+        data = extract_multi(runtime.llm(), doc.get("title") or "", text, max_chars=cap)
     except Exception as exc:  # noqa: BLE001 上游模型问题不该拖垮入库
         log.warning("图谱抽取失败 doc=%s: %s", doc_id, exc)
         return {"status": "error", "message": str(exc)[:200]}
-    if not data["entities"]:
+    if not (data["entities"] or data["relations"]):
         db.clear_graph(doc_id)
         return {"status": "no_entity"}
     saved = store(db, doc_id, data, text[:cap])
@@ -172,7 +247,7 @@ def build(runtime, db, doc_id: int, text: str | None = None) -> dict:
 
 
 # ---------- 查询 ----------
-def view(db, doc_id: int | None = None, limit_docs: int = 40, limit_entities: int = 400) -> dict:
+def view(db, doc_id: int | None = None, limit_docs: int = 200, limit_entities: int = 700) -> dict:
     """返回前端画图用的 nodes / edges。doc_id 给了就只看这篇文档及其一层邻居。"""
     db.gc_entities()
     nodes: dict[str, dict] = {}
@@ -216,6 +291,24 @@ def view(db, doc_id: int | None = None, limit_docs: int = 40, limit_entities: in
                                   "ref": int(node_id.split(":")[1]), "size": 1.0, "kind": "entity"}
         if src in nodes and dst in nodes:
             edges.append({"source": src, "target": dst, "rel": rel["rel"], "kind": "relation"})
+
+    # 同一篇文档里一起出现的实体也连虚线：模型只抽得出几条显式关系，
+    # 但「同一段内容里被一起讨论」本身就是一种关联，否则图会稀得看不出结构
+    seen_pair = {frozenset((e["source"], e["target"])) for e in edges if e["kind"] == "relation"}
+    doc_ents: dict[str, list[str]] = {}
+    for edge in edges:
+        if edge["kind"] == "mention":
+            doc_ents.setdefault(edge["source"], []).append(edge["target"])
+    for doc_node, ent_nodes in doc_ents.items():
+        picked = [n for n in ent_nodes if n in nodes][:14]
+        for i in range(len(picked)):
+            for j in range(i + 1, len(picked)):
+                pair = frozenset((picked[i], picked[j]))
+                if pair in seen_pair:
+                    continue
+                seen_pair.add(pair)
+                edges.append({"source": picked[i], "target": picked[j],
+                              "rel": "同篇共现", "kind": "cooccur"})
 
     # 同一实体出现在多篇文档里时，文档之间也连一条虚线，表示「隐性共现」
     ent_docs: dict[int, list[str]] = {}

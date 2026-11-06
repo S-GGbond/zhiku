@@ -288,6 +288,31 @@ class Database:
         )
         return [dict(r) for r in rows]
 
+    def chunks_page(self, doc_id: int, page: int, size: int) -> tuple[list[dict], int]:
+        """按页取某篇文档的片段，供图谱节点查看正文。"""
+        total_row = self.query_one("SELECT COUNT(*) AS n FROM chunks WHERE doc_id = ?", (doc_id,))
+        total = int(total_row["n"]) if total_row else 0
+        rows = self.query(
+            "SELECT c.id, c.doc_id, c.seq, c.text, c.page, c.heading, d.title AS doc_title"
+            " FROM chunks c JOIN documents d ON d.id = c.doc_id"
+            " WHERE c.doc_id = ? ORDER BY c.seq LIMIT ? OFFSET ?",
+            (doc_id, size, (page - 1) * size),
+        )
+        return [dict(r) for r in rows], total
+
+    def chunks_mentioning(self, name: str, page: int, size: int) -> tuple[list[dict], int]:
+        """按页取正文里出现某个实体的片段。"""
+        like = f"%{name}%"
+        total_row = self.query_one("SELECT COUNT(*) AS n FROM chunks WHERE text LIKE ?", (like,))
+        total = int(total_row["n"]) if total_row else 0
+        rows = self.query(
+            "SELECT c.id, c.doc_id, c.seq, c.text, c.page, c.heading, d.title AS doc_title"
+            " FROM chunks c JOIN documents d ON d.id = c.doc_id"
+            " WHERE c.text LIKE ? ORDER BY c.doc_id, c.seq LIMIT ? OFFSET ?",
+            (like, size, (page - 1) * size),
+        )
+        return [dict(r) for r in rows], total
+
     def replace_all_from(self, sqlite_path: str | Path) -> dict:
         """用另一个库的 documents/chunks/settings 整体替换本库（导入备份用）。"""
         conn = self.conn()

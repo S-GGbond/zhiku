@@ -36,7 +36,7 @@ DEFAULTS: dict[str, Any] = {
     # 知识图谱
     "graph_enabled": True,
     "graph_expand": True,
-    "graph_max_chars": 6000,
+    "graph_max_chars": 4000,
     # 上传
     "max_upload_mb": 50,
 }
