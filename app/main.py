@@ -77,6 +77,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return await call_next(request)
         return JSONResponse({"detail": "请先登录，或在请求头带访问令牌"}, status_code=401)
 
+    @app.middleware("http")
+    async def static_revalidate(request: Request, call_next):
+        """静态文件不带 Cache-Control 时，浏览器会按启发式缓存很久，更新后仍然拿旧 CSS/JS。
+        这里明确要求每次带 ETag 回源校验，没变就是一个 304。"""
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     app.include_router(router)
 
     @app.get("/health")
