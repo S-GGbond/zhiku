@@ -105,13 +105,14 @@ class LLMClient:
         self._client = _client(base_url, api_key, timeout)
 
     def complete(self, messages: list[dict], *, max_tokens: int | None = None,
-                 temperature: float | None = None) -> str:
+                 temperature: float | None = None, timeout: float | None = None) -> str:
         try:
             resp = self._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=self.temperature if temperature is None else temperature,
                 max_tokens=max_tokens or self.max_tokens,
+                **({"timeout": timeout} if timeout else {}),
             )
         except Exception as exc:  # noqa: BLE001
             raise ProviderError(f"对话模型调用失败（{self.model}）：{_brief(exc)}") from exc

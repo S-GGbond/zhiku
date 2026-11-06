@@ -25,6 +25,8 @@ class Ingestor:
         self.runtime = runtime
         self.index = index
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ingest")
+        # 建图单独一条慢速通道：模型慢或不可达时不能把入库线程占住
+        self.graph_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="graph")
         self._active: set[int] = set()
         self._lock = threading.Lock()
 
@@ -251,7 +253,7 @@ class Ingestor:
         if wanted:
             targets = [i for i in targets if i in wanted]
         for doc_id in targets:
-            self._submit(doc_id, lambda d=doc_id: kbgraph.build(self.runtime, self.db, d))
+            self.graph_pool.submit(self._build_graph_safe, doc_id, None)
         return {"queued": len(targets)}
 
     def reembed_all(self) -> dict:
@@ -266,6 +268,12 @@ class Ingestor:
         with self._lock:
             self._active.add(doc_id)
         self.pool.submit(self._guard, doc_id, fn)
+
+    def _build_graph_safe(self, doc_id: int, text: str) -> None:
+        try:
+            kbgraph.build(self.runtime, self.db, doc_id, text=text)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("建图失败 doc=%s: %s", doc_id, exc)
 
     def _guard(self, doc_id: int, fn) -> None:
         try:
@@ -321,8 +329,9 @@ class Ingestor:
             title=current.get("title") or parsed.title,
         )
         self.index.invalidate()
-        # 建图放在入库之后：抽取失败只影响图谱，不影响文档可检索
-        kbgraph.build(self.runtime, self.db, doc_id, text="\n".join(c["text"] for c in chunks))
+        # 建图放到独立线程池：模型慢或不可达时，文档照常可检索，也不堵住后续入库
+        text = "\n".join(c["text"] for c in chunks)
+        self.graph_pool.submit(self._build_graph_safe, doc_id, text)
 
     def _run_reembed(self, doc_id: int) -> None:
         rows = self.db.chunks_of(doc_id)

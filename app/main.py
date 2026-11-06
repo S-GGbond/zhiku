@@ -55,6 +55,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         log.info("知识库已就绪：%s", data_dir)
         yield
         ingestor.pool.shutdown(wait=False)
+        ingestor.graph_pool.shutdown(wait=False)
 
     app = FastAPI(title="本地知识库 RAG", version="0.1.0", lifespan=lifespan, docs_url="/api/docs")
 

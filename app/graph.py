@@ -83,6 +83,7 @@ def extract(llm, title: str, text: str, max_chars: int = 6000) -> dict:
          {"role": "user", "content": prompt}],
         max_tokens=900,
         temperature=0.0,
+        timeout=60,  # 抽取只是加分项，别让它长时间占住线程
     )
     data = _loads(raw)
     if not data:
